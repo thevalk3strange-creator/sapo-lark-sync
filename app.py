@@ -121,11 +121,17 @@ def scan_all():
 
 # ─── Web ────────────────────────────
 app = Flask(__name__)
-@app.route("/") def health():
+
+@app.route("/")
+def health():
     return jsonify({"status":"ok"})
-@app.route("/sync") def trigger():
+
+@app.route("/sync")
+def trigger():
     run(); return jsonify({"status":"synced"})
-@app.route("/scan-all") def trigger_scan():
+
+@app.route("/scan-all")
+def trigger_scan():
     scan_all(); return jsonify({"status":"scan_completed"})
 
 # ─── Scheduler ──────────────────────
