@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: sapo-staging-sync
+    runtime: python
+    plan: free
+    buildCommand: pip install flask apscheduler requests gunicorn
+    startCommand: gunicorn staging-sync-service:app --bind 0.0.0.0:$PORT --worker-class sync --timeout 120
+    envVars:
+      - key: LARK_APP_ID
+        sync: false
+      - key: LARK_APP_SECRET
+        sync: false
+      - key: BASE_TOKEN
+        sync: false
+      - key: SAPO_STORE
+        sync: false
+      - key: SAPO_KEY
+        sync: false
+      - key: SAPO_SECRET
+        sync: false
