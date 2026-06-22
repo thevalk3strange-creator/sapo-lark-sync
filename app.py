@@ -22,3 +22,4 @@ def sync():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+# Render fresh deploy Mon Jun 22 17:31:20 +07 2026
