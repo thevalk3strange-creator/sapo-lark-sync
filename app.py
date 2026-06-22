@@ -15,6 +15,7 @@ LARK_APP_ID = os.environ["LARK_APP_ID"]
 LARK_APP_SECRET = os.environ["LARK_APP_SECRET"]
 BASE_TOKEN = os.environ["BASE_TOKEN"]
 STAGING = "tbloP45vaT4I2mwF"
+DH_TABLE = "tblZlQNNxxyMb4aS"
 SAPO_STORE = os.environ["SAPO_STORE"]
 SAPO_KEY = os.environ["SAPO_KEY"]
 SAPO_SECRET = os.environ["SAPO_SECRET"]
@@ -103,7 +104,43 @@ def run():
     except Exception as e:
         log.error(f"Sync fail: {e}")
 
+def backfill_sx():
+    """Scan DH → write to staging → v5 pushes to SX"""
+    log.info("=== Backfill DH → SX ===")
+    try:
+        h = lark._h(); items = []; pt = None
+        while True:
+            url = f"{LARK_HOST}/open-apis/bitable/v1/apps/{BASE_TOKEN}/tables/{DH_TABLE}/records?page_size=500"
+            if pt: url += f"&page_token={pt}"
+            r = requests.get(url, headers=h, timeout=30).json()
+            items += r.get("data", {}).get("items", [])
+            if not r.get("data", {}).get("has_more"): break
+            pt = r["data"].get("page_token", "")
+        log.info(f"{len(items)} DH records")
+        n = 0
+        for item in items:
+            f = item.get("fields", {})
+            order = f.get("Mã đơn hàng SAPO", "")
+            if not order: continue
+            clean = {k:v for k,v in {
+                "Mã đơn hàng SAPO": order, "Khách hàng": f.get("Khách hàng", ""),
+                "SĐT": f.get("SĐT", ""), "Địa chỉ": f.get("Địa chỉ", ""),
+                "Ngày đặt hàng(cọc)": f.get("Ngày đặt hàng(cọc)", 0),
+                "Ghi chú": f.get("Ghi chú", ""), "Hẹn giao": f.get("Hẹn giao", 0),
+                "Tên sản phẩm mới": f.get("Tên sản phẩm mới", ""),
+                "Tổng tiền": f.get("Tổng tiền", 0),
+                "Tiền đã đặt cọc": f.get("Tiền đã đặt cọc", 0),
+                "Trạng thái thanh toán": f.get("Trạng thái thanh toán", ""),
+                "Trạng thái đơn hàng": f.get("Trạng thái đơn hàng", ""),
+            }.items() if v is not None and v != ""}
+            try: lark.create(clean); n += 1
+            except: pass
+        log.info(f"=== Done: {n} staging records ===")
+    except Exception as e:
+        log.error(f"Backfill fail: {e}")
+
 def scan_all():
+    """Scan ALL SAPO orders → staging"""
     log.info("=== SCAN ALL SAPO ORDERS ===")
     try:
         data = sapo("orders.json?limit=250")
@@ -133,6 +170,10 @@ def trigger():
 @app.route("/scan-all")
 def trigger_scan():
     scan_all(); return jsonify({"status":"scan_completed"})
+
+@app.route("/backfill-sx")
+def trigger_backfill():
+    backfill_sx(); return jsonify({"status":"backfill_completed"})
 
 # ─── Scheduler ──────────────────────
 scheduler = BackgroundScheduler()
