@@ -1,0 +1,16 @@
+# Python cache
+__pycache__/
+*.pyc
+.DS_Store
+
+# Old workflow files (contain Lark tokens in flow JSONs)
+Update Sapo orders in Base.zip
+Update-SAPO-orders-*.zip
+realtime*.zip
+realtime*.json
+scheduled*.json
+scheduled*.zip
+update-order-to-base.zip
+flow-v19.json
+sửa.zip
+tét tét.zip

@@ -1,0 +1,29 @@
+name: Sync SAPO → Lark
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # Every 6 hours
+  workflow_dispatch:         # Manual trigger
+  # push trigger disabled to prevent accidental runs
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run sync
+        env:
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          BASE_TOKEN: ${{ secrets.BASE_TOKEN }}
+          SAPO_STORE: ${{ secrets.SAPO_STORE }}
+          SAPO_KEY: ${{ secrets.SAPO_KEY }}
+          SAPO_SECRET: ${{ secrets.SAPO_SECRET }}
+        run: python sync-sapo-to-lark.py --github-actions --days 7
