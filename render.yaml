@@ -3,8 +3,8 @@ services:
     name: sapo-staging-sync
     runtime: python
     plan: free
-    buildCommand: pip install flask apscheduler requests gunicorn
-    startCommand: gunicorn staging_sync_service:app --bind 0.0.0.0:$PORT --worker-class sync --timeout 120
+    buildCommand: pip install -r requirements.txt
+    startCommand: python staging_sync_service.py
     envVars:
       - key: LARK_APP_ID
         sync: false
