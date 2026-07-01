@@ -4,7 +4,7 @@ Chỉ ghi vào STAGING — không đụng DH/SX. An toàn tuyệt đối.
 Workflow v5 (Lark Base) sẽ xử lý staging → DH + SX.
 """
 import json, logging, os, time, requests
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from apscheduler.schedulers.background import BackgroundScheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -22,6 +22,70 @@ SAPO_SECRET = os.environ["SAPO_SECRET"]
 LARK_HOST = "https://open.larksuite.com"
 SYNC_HOURS = os.environ.get("SYNC_HOURS", "8-20/2")
 SYNC_TZ = "Asia/Ho_Chi_Minh"
+
+# ─── Telegram ──────────────────────
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+CHAT_IDS_FILE = "/tmp/chat_ids.json"
+
+def load_chat_ids():
+    try:
+        with open(CHAT_IDS_FILE) as f:
+            return json.load(f)
+    except:
+        return []
+
+def save_chat_id(chat_id):
+    ids = load_chat_ids()
+    if chat_id not in ids:
+        ids.append(chat_id)
+        with open(CHAT_IDS_FILE, "w") as f:
+            json.dump(ids, f)
+        return True
+    return False
+
+def send_telegram(text, chat_id=None):
+    if not TELEGRAM_TOKEN:
+        return
+    targets = [chat_id] if chat_id else load_chat_ids()
+    for cid in targets:
+        try:
+            requests.post(f"{TELEGRAM_API}/sendMessage", json={
+                "chat_id": cid, "text": text, "parse_mode": "HTML"
+            }, timeout=10)
+        except Exception as e:
+            log.warning(f"Telegram send fail ({cid}): {e}")
+
+def report_daily():
+    """Gửi báo cáo cuối ngày cho CSKH"""
+    log.info("=== Daily report ===")
+    try:
+        today = time.strftime("%Y-%m-%dT00:00:00Z", time.gmtime())
+        data = sapo(f"orders.json?created_at_min={today}&limit=250")
+        orders = data.get("orders", [])
+        total_revenue = sum(float(o.get("total_price", 0)) for o in orders)
+
+        msg = f"📊 <b>Báo cáo cuối ngày</b>\n"
+        msg += f"📅 {time.strftime('%d/%m/%Y', time.localtime())}\n\n"
+        msg += f"🆕 Đơn mới hôm nay: <b>{len(orders)}</b>\n"
+        msg += f"💰 Tổng doanh thu: <b>{total_revenue:,.0f}đ</b>\n\n"
+
+        if orders:
+            msg += "━━━ Danh sách ━━━\n"
+            for o in orders[:15]:
+                ship = o.get("shipping_address") or {}
+                c = o.get("customer") or {}
+                name = ship.get("name", "") or f"{c.get('last_name','')} {c.get('first_name','')}".strip()
+                msg += f"• #{o['order_number']} {name}: {float(o['total_price']):,.0f}đ\n"
+            if len(orders) > 15:
+                msg += f"... và {len(orders)-15} đơn khác\n"
+
+        msg += f"\n━━━━━━━━━\n<i>Nguồn: Render Sync | {time.strftime('%H:%M %d/%m/%Y')}</i>"
+        send_telegram(msg)
+        log.info(f"Report sent to {len(load_chat_ids())} chats")
+    except Exception as e:
+        log.error(f"Report fail: {e}")
+# ────────────────────────────────────
 # ────────────────────────────────────
 
 # ─── Lark: chỉ ghi staging ─────────
@@ -176,9 +240,35 @@ def trigger_scan():
 def trigger_backfill():
     backfill_sx(); return jsonify({"status":"backfill_completed"})
 
+@app.route("/telegram-webhook", methods=["POST"])
+def telegram_webhook():
+    data = request.json
+    if not data:
+        return jsonify({"ok": False}), 400
+    msg = data.get("message", {})
+    chat = msg.get("chat", {})
+    chat_id = chat.get("id")
+    text = msg.get("text", "")
+    if text == "/start":
+        new = save_chat_id(chat_id)
+        reply = "✅ Đã đăng ký nhận báo cáo hàng ngày!\nTừ 17h mỗi ngày bạn sẽ nhận được báo cáo tổng kết."
+        if not new:
+            reply = "✅ Bạn đã đăng ký trước đó rồi."
+        send_telegram(reply, chat_id)
+    elif text == "/now":
+        report_daily()
+    elif text == "/help":
+        send_telegram(
+            "/start - Đăng ký nhận báo cáo\n"
+            "/now - Báo cáo ngay\n"
+            "/help - Trợ giúp này", chat_id)
+    return jsonify({"ok": True})
+
 # ─── Scheduler ──────────────────────
 scheduler = BackgroundScheduler()
 scheduler.add_job(run, "cron", hour=SYNC_HOURS, minute="0", timezone="Asia/Ho_Chi_Minh", id="sync")
+if TELEGRAM_TOKEN:
+    scheduler.add_job(report_daily, "cron", hour="17", minute="0", timezone="Asia/Ho_Chi_Minh", id="daily_report")
 scheduler.start()
 
 if __name__ == "__main__":
