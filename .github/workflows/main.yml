@@ -11,11 +11,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
-
       - run: pip install requests
-
       - run: python sync_backup.py
         env:
           LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
@@ -25,3 +22,4 @@ jobs:
           SAPO_KEY: ${{ secrets.SAPO_KEY }}
           SAPO_SECRET: ${{ secrets.SAPO_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
