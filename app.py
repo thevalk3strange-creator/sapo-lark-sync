@@ -90,6 +90,43 @@ def send_telegram(text, chat_id=None):
         except Exception as e:
             log.warning(f"Telegram send fail ({cid}): {e}")
 
+def lookup_order(query):
+    """Tìm đơn hàng theo SĐT hoặc mã đơn trong bảng DH."""
+    try:
+        records = lark.list_records(DH_TABLE, page_size=100)
+        items = records.get("items", [])
+        q = query.strip().lstrip("#").lower()
+        matches = []
+        for item in items:
+            f = item.get("fields", {})
+            phone = str(f.get("SĐT", "")).strip()
+            order_num = str(f.get("Mã đơn hàng SAPO", "")).strip().lstrip("#")
+            name = str(f.get("Khách hàng", "")).strip()
+            if q in phone or q == order_num or q in name.lower():
+                matches.append(f)
+        return matches[:5]
+    except Exception as e:
+        log.warning(f"Order lookup fail: {e}")
+        return []
+
+def format_order_info(matches):
+    """Format thông tin đơn hàng để hiển thị."""
+    if not matches:
+        return "❌ Không tìm thấy đơn hàng nào phù hợp."
+    lines = ["📦 <b>Kết quả tìm kiếm:</b>\n"]
+    for m in matches[:3]:
+        order = m.get("Mã đơn hàng SAPO", "?")
+        name = m.get("Khách hàng", "?")
+        product = m.get("Tên sản phẩm mới", "?")
+        status = m.get("Trạng thái đơn hàng", "?")
+        payment = m.get("Trạng thái thanh toán", "?")
+        total = m.get("Tổng tiền", 0)
+        lines.append(f"• <b>{order}</b> - {name}")
+        lines.append(f"  Sản phẩm: {product}")
+        lines.append(f"  Trạng thái: {status} | Thanh toán: {payment}")
+        lines.append(f"  Tổng: {float(total):,.0f}đ\n")
+    return "\n".join(lines)
+
 def report_daily():
     """Gửi báo cáo cuối ngày cho CSKH"""
     log.info("=== Daily report ===")
@@ -138,6 +175,15 @@ class LarkClient:
         return {"Authorization": f"Bearer {self._token()}", "Content-Type": "application/json"}
     def create(self, fields):
         r = requests.post(f"{LARK_HOST}/open-apis/bitable/v1/apps/{BASE_TOKEN}/tables/{STAGING}/records",
+            headers=self._h(), json={"fields": fields}, timeout=30)
+        return r.json().get("code") == 0
+    def list_records(self, table_id, page_size=500, page_token=None):
+        url = f"{LARK_HOST}/open-apis/bitable/v1/apps/{BASE_TOKEN}/tables/{table_id}/records?page_size={page_size}"
+        if page_token: url += f"&page_token={page_token}"
+        r = requests.get(url, headers=self._h(), timeout=30).json()
+        return r.get("data", {})
+    def update(self, table_id, record_id, fields):
+        r = requests.put(f"{LARK_HOST}/open-apis/bitable/v1/apps/{BASE_TOKEN}/tables/{table_id}/records/{record_id}",
             headers=self._h(), json={"fields": fields}, timeout=30)
         return r.json().get("code") == 0
 
@@ -299,9 +345,19 @@ def telegram_webhook():
             "/help - Trợ giúp\n\n"
             "💬 Hoặc hỏi mình bất cứ điều gì!", chat_id)
     elif text:
-        log.info(f"AI question from {chat_id}: {text[:50]}")
-        reply = ask_ai(text)
-        send_telegram(reply, chat_id)
+        if any(c.isdigit() for c in text) and len(text) >= 6:
+            matches = lookup_order(text)
+            if matches:
+                reply = format_order_info(matches)
+                send_telegram(reply, chat_id)
+            else:
+                log.info(f"AI question from {chat_id}: {text[:50]}")
+                reply = ask_ai(text)
+                send_telegram(reply, chat_id)
+        else:
+            log.info(f"AI question from {chat_id}: {text[:50]}")
+            reply = ask_ai(text)
+            send_telegram(reply, chat_id)
     return jsonify({"ok": True})
 
 # ─── Scheduler ──────────────────────
