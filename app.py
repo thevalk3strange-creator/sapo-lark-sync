@@ -35,9 +35,10 @@ AI_MODEL = "deepseek-v4-flash"
 
 SYSTEM_PROMPT = """Bạn là trợ lý CSKH của Gấm Vóc (shop áo dài cưới).
 Bạn trả lời ngắn gọn, thân thiện bằng tiếng Việt.
-Bạn có thể tra cứu thông tin đơn hàng khi được hỏi.
-Khi ai đó hỏi về sản phẩm/áo dài, bạn tư vấn nhiệt tình.
-Nếu không biết câu trả lời, bạn nói thật là không rõ và đề nghị hỏi shop trực tiếp."""
+Bạn có thể tra cứu thông tin đơn hàng khi khách hàng cung cấp số điện thoại hoặc mã đơn.
+Khi khách hỏi về sản phẩm/áo dài, bạn tư vấn nhiệt tình.
+Nếu không tìm thấy đơn hàng, hãy đề nghị khách cung cấp thêm thông tin (số điện thoại, mã đơn chính xác).
+Không nói "không có quyền truy cập" — thay vào đó hãy nói "không tìm thấy" và đề nghị khách kiểm tra lại thông tin."""
 
 def ask_ai(user_msg):
     """Gọi API AI Box để trả lời tin nhắn"""
@@ -93,17 +94,26 @@ def send_telegram(text, chat_id=None):
 def lookup_order(query):
     """Tìm đơn hàng theo SĐT hoặc mã đơn trong bảng DH."""
     try:
-        records = lark.list_records(DH_TABLE, page_size=100)
-        items = records.get("items", [])
+        all_items = []
+        pt = None
+        while True:
+            chunk = lark.list_records(DH_TABLE, page_size=500, page_token=pt)
+            items = chunk.get("items", [])
+            all_items.extend(items)
+            if not chunk.get("has_more") or len(all_items) > 2000:
+                break
+            pt = chunk.get("page_token", "")
+        
         q = query.strip().lstrip("#").lower()
         matches = []
-        for item in items:
+        for item in all_items:
             f = item.get("fields", {})
             phone = str(f.get("SĐT", "")).strip()
             order_num = str(f.get("Mã đơn hàng SAPO", "")).strip().lstrip("#")
             name = str(f.get("Khách hàng", "")).strip()
             if q in phone or q == order_num or q in name.lower():
                 matches.append(f)
+        log.info(f"Lookup '{query}': found {len(matches)} matches from {len(all_items)} records")
         return matches[:5]
     except Exception as e:
         log.warning(f"Order lookup fail: {e}")
@@ -345,13 +355,16 @@ def telegram_webhook():
             "/help - Trợ giúp\n\n"
             "💬 Hoặc hỏi mình bất cứ điều gì!", chat_id)
     elif text:
-        if any(c.isdigit() for c in text) and len(text) >= 6:
+        is_order_query = (
+            text.startswith("#") or 
+            (text.replace(" ", "").replace("-", "").isdigit() and len(text) >= 4)
+        )
+        if is_order_query:
             matches = lookup_order(text)
             if matches:
                 reply = format_order_info(matches)
                 send_telegram(reply, chat_id)
             else:
-                log.info(f"AI question from {chat_id}: {text[:50]}")
                 reply = ask_ai(text)
                 send_telegram(reply, chat_id)
         else:
