@@ -23,5 +23,5 @@ jobs:
           BASE_TOKEN: ${{ secrets.BASE_TOKEN }}
           SAPO_STORE: ${{ secrets.SAPO_STORE }}
           SAPO_KEY: ${{ secrets.SAPO_KEY }}
-          SAPO_SECRET: ${ secrets.SAPO_SECRET }}
+          SAPO_SECRET: ${{ secrets.SAPO_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
