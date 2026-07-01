@@ -1,17 +1,23 @@
 #!/bin/bash
-# Install lark-cli
-echo "Installing lark-cli..."
-npm install -g @larksuite/cli@latest 2>/dev/null
+set -e
 
-# Configure lark-cli with app credentials
-echo "Configuring lark-cli..."
-lark-cli config init --non-interactive \
-  --app-id "$LARK_APP_ID" \
-  --app-secret "$LARK_APP_SECRET" \
-  --domain "https://open.larksuite.com" 2>/dev/null || true
+echo "=== Lark CLI Setup ==="
 
-echo "lark-cli ready!"
-echo "Starting Hermes gateway..."
+# Create lark-cli env file from Railway env vars
+mkdir -p /opt/data
+cat > /opt/data/.env << ENVEOF
+FEISHU_APP_ID=${LARK_APP_ID}
+FEISHU_APP_SECRET=${LARK_APP_SECRET}
+ENVEOF
 
-# Start Hermes gateway
+echo "lark-cli .env created"
+
+# Bind lark-cli to Hermes (bot-only identity)
+echo "Binding lark-cli to Hermes..."
+lark-cli config bind \
+  --source hermes \
+  --app-id "${LARK_APP_ID}" \
+  --identity bot-only 2>&1 || echo "Bind skipped (may already be bound)"
+
+echo "=== Starting Hermes Gateway ==="
 exec hermes gateway
