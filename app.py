@@ -3,7 +3,7 @@ SAPO → Staging Sync Service
 Chỉ ghi vào STAGING — không đụng DH/SX. An toàn tuyệt đối.
 Workflow v5 (Lark Base) sẽ xử lý staging → DH + SX.
 """
-import json, logging, os, time, requests
+import json, logging, os, time, requests, threading
 from flask import Flask, jsonify, request
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -92,28 +92,55 @@ def send_telegram(text, chat_id=None):
             log.warning(f"Telegram send fail ({cid}): {e}")
 
 def lookup_order(query):
-    """Tìm đơn hàng theo SĐT hoặc mã đơn trong bảng DH."""
+    """Tìm đơn hàng theo SĐT hoặc mã đơn — dùng Lark filter API để nhanh."""
     try:
-        all_items = []
-        pt = None
-        while True:
-            chunk = lark.list_records(DH_TABLE, page_size=500, page_token=pt)
-            items = chunk.get("items", [])
-            all_items.extend(items)
-            if not chunk.get("has_more") or len(all_items) > 2000:
-                break
-            pt = chunk.get("page_token", "")
-        
         q = query.strip().lstrip("#").lower()
+        all_items = []
+        
+        # 1. Nếu query có dạng số, thử filter theo Mã đơn hàng SAPO
+        if q.isdigit() or (query.startswith("#") and q.isdigit()):
+            order_code = "#" + q if not query.startswith("#") else query.strip()
+            try:
+                url = f"{LARK_HOST}/open-apis/bitable/v1/apps/{BASE_TOKEN}/tables/{DH_TABLE}/records"
+                params = {"filter": f'CurrentValue.[Mã đơn hàng SAPO] = "{order_code}"', "page_size": 20}
+                r = requests.get(url, headers=lark._h(), params=params, timeout=10).json()
+                if r.get("code") == 0:
+                    all_items.extend(r.get("data", {}).get("items", []))
+            except: pass
+        
+        # 2. Nếu query là SĐT (10 chữ số), filter theo SĐT
+        clean_phone = q.replace(" ", "").replace("-", "")
+        if clean_phone.isdigit() and len(clean_phone) >= 9:
+            try:
+                url = f"{LARK_HOST}/open-apis/bitable/v1/apps/{BASE_TOKEN}/tables/{DH_TABLE}/records"
+                params = {"filter": f'CurrentValue.[SĐT] = "{clean_phone}"', "page_size": 20}
+                r = requests.get(url, headers=lark._h(), params=params, timeout=10).json()
+                if r.get("code") == 0:
+                    all_items.extend(r.get("data", {}).get("items", []))
+            except: pass
+        
+        # 3. Nếu không tìm được bằng filter, fallback quét 1 page
+        if not all_items:
+            chunk = lark.list_records(DH_TABLE, page_size=100)
+            for item in chunk.get("items", []):
+                f = item.get("fields", {})
+                phone = str(f.get("SĐT", "")).strip()
+                order_num = str(f.get("Mã đơn hàng SAPO", "")).strip().lstrip("#")
+                name = str(f.get("Khách hàng", "")).strip()
+                if q in phone or q == order_num or q in name.lower():
+                    all_items.append(item)
+        
+        # Dedup
+        seen = set()
         matches = []
         for item in all_items:
             f = item.get("fields", {})
-            phone = str(f.get("SĐT", "")).strip()
-            order_num = str(f.get("Mã đơn hàng SAPO", "")).strip().lstrip("#")
-            name = str(f.get("Khách hàng", "")).strip()
-            if q in phone or q == order_num or q in name.lower():
+            key = f.get("Mã đơn hàng SAPO", "") + "|" + f.get("Tên sản phẩm mới", "")
+            if key not in seen:
+                seen.add(key)
                 matches.append(f)
-        log.info(f"Lookup '{query}': found {len(matches)} matches from {len(all_items)} records")
+        
+        log.info(f"Lookup '{query}': found {len(matches)} matches")
         return matches[:5]
     except Exception as e:
         log.warning(f"Order lookup fail: {e}")
@@ -335,42 +362,46 @@ def telegram_webhook():
     data = request.json
     if not data:
         return jsonify({"ok": False}), 400
-    msg = data.get("message", {})
-    chat = msg.get("chat", {})
-    chat_id = chat.get("id")
-    text = msg.get("text", "")
-    if text == "/start":
-        new = save_chat_id(chat_id)
-        reply = "✅ Đã đăng ký nhận báo cáo hàng ngày!\nTừ 17h mỗi ngày bạn sẽ nhận được báo cáo tổng kết."
-        if not new:
-            reply = "✅ Bạn đã đăng ký trước đó rồi."
-        send_telegram(reply, chat_id)
-    elif text == "/now":
-        report_daily()
-    elif text == "/help":
-        send_telegram(
-            "🤖 <b>Trợ lý Gấm Vóc</b>\n\n"
-            "/start - Đăng ký nhận báo cáo\n"
-            "/now - Báo cáo ngay\n"
-            "/help - Trợ giúp\n\n"
-            "💬 Hoặc hỏi mình bất cứ điều gì!", chat_id)
-    elif text:
-        is_order_query = (
-            text.startswith("#") or 
-            (text.replace(" ", "").replace("-", "").isdigit() and len(text) >= 4)
-        )
-        if is_order_query:
-            matches = lookup_order(text)
-            if matches:
-                reply = format_order_info(matches)
-                send_telegram(reply, chat_id)
+    
+    def process():
+        msg = data.get("message", {})
+        chat = msg.get("chat", {})
+        chat_id = chat.get("id")
+        text = msg.get("text", "")
+        if text == "/start":
+            new = save_chat_id(chat_id)
+            reply = "✅ Đã đăng ký nhận báo cáo hàng ngày!\nTừ 17h mỗi ngày bạn sẽ nhận được báo cáo tổng kết."
+            if not new:
+                reply = "✅ Bạn đã đăng ký trước đó rồi."
+            send_telegram(reply, chat_id)
+        elif text == "/now":
+            report_daily()
+        elif text == "/help":
+            send_telegram(
+                "🤖 <b>Trợ lý Gấm Vóc</b>\n\n"
+                "/start - Đăng ký nhận báo cáo\n"
+                "/now - Báo cáo ngay\n"
+                "/help - Trợ giúp\n\n"
+                "💬 Hoặc hỏi mình bất cứ điều gì!", chat_id)
+        elif text:
+            is_order_query = (
+                text.startswith("#") or 
+                (text.replace(" ", "").replace("-", "").isdigit() and len(text) >= 4)
+            )
+            if is_order_query:
+                matches = lookup_order(text)
+                if matches:
+                    reply = format_order_info(matches)
+                    send_telegram(reply, chat_id)
+                else:
+                    reply = ask_ai(text)
+                    send_telegram(reply, chat_id)
             else:
+                log.info(f"AI question from {chat_id}: {text[:50]}")
                 reply = ask_ai(text)
                 send_telegram(reply, chat_id)
-        else:
-            log.info(f"AI question from {chat_id}: {text[:50]}")
-            reply = ask_ai(text)
-            send_telegram(reply, chat_id)
+    
+    threading.Thread(target=process, daemon=True).start()
     return jsonify({"ok": True})
 
 # ─── Scheduler ──────────────────────
