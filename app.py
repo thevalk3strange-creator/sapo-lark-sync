@@ -28,6 +28,40 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 CHAT_IDS_FILE = "/tmp/chat_ids.json"
 
+# ─── AI Box ─────────────────────────
+AI_BOX_KEY = os.environ.get("AI_BOX_API_KEY", "")
+AI_BOX_URL = "https://api.ai-box.vn/v1/chat/completions"
+AI_MODEL = "deepseek-v4-flash"
+
+SYSTEM_PROMPT = """Bạn là trợ lý CSKH của Gấm Vóc (shop áo dài cưới).
+Bạn trả lời ngắn gọn, thân thiện bằng tiếng Việt.
+Bạn có thể tra cứu thông tin đơn hàng khi được hỏi.
+Khi ai đó hỏi về sản phẩm/áo dài, bạn tư vấn nhiệt tình.
+Nếu không biết câu trả lời, bạn nói thật là không rõ và đề nghị hỏi shop trực tiếp."""
+
+def ask_ai(user_msg):
+    """Gọi API AI Box để trả lời tin nhắn"""
+    if not AI_BOX_KEY:
+        return "❌ Chưa cấu hình AI. Liên hệ admin để setup."
+    try:
+        r = requests.post(AI_BOX_URL, json={
+            "model": AI_MODEL,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg}
+            ],
+            "max_tokens": 500,
+            "temperature": 0.7
+        }, headers={
+            "Authorization": f"Bearer {AI_BOX_KEY}",
+            "Content-Type": "application/json"
+        }, timeout=15)
+        data = r.json()
+        return data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        log.error(f"AI error: {e}")
+        return "😅 Xin lỗi, mình đang bị lỗi kết nối AI. Thử lại sau nhé!"
+
 def load_chat_ids():
     try:
         with open(CHAT_IDS_FILE) as f:
@@ -259,9 +293,15 @@ def telegram_webhook():
         report_daily()
     elif text == "/help":
         send_telegram(
+            "🤖 <b>Trợ lý Gấm Vóc</b>\n\n"
             "/start - Đăng ký nhận báo cáo\n"
             "/now - Báo cáo ngay\n"
-            "/help - Trợ giúp này", chat_id)
+            "/help - Trợ giúp\n\n"
+            "💬 Hoặc hỏi mình bất cứ điều gì!", chat_id)
+    elif text:
+        log.info(f"AI question from {chat_id}: {text[:50]}")
+        reply = ask_ai(text)
+        send_telegram(reply, chat_id)
     return jsonify({"ok": True})
 
 # ─── Scheduler ──────────────────────
