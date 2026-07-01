@@ -1,21 +1,28 @@
 """
 SAPO → Staging Backup Sync (dùng cho GitHub Actions)
-Chạy độc lập, không phụ thuộc Flask.
+Phiên bản nhẹ: 1 trang, timeout ngắn, log từng bước.
 """
-import json, os, time, requests
+import json, os, time, requests, sys
+
+print("=== Khởi động sync_backup.py ===")
+sys.stdout.flush()
 
 # ─── Config ─────────────────────────
-LARK_APP_ID = os.environ["LARK_APP_ID"]
-LARK_APP_SECRET = os.environ["LARK_APP_SECRET"]
-BASE_TOKEN = os.environ["BASE_TOKEN"]
+LARK_APP_ID = os.environ.get("LARK_APP_ID", "")
+LARK_APP_SECRET = os.environ.get("LARK_APP_SECRET", "")
+BASE_TOKEN = os.environ.get("BASE_TOKEN", "")
 STAGING = "tbloP45vaT4I2mwF"
-SAPO_STORE = os.environ["SAPO_STORE"]
-SAPO_KEY = os.environ["SAPO_KEY"]
-SAPO_SECRET = os.environ["SAPO_SECRET"]
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+SAPO_STORE = os.environ.get("SAPO_STORE", "")
+SAPO_KEY = os.environ.get("SAPO_KEY", "")
+SAPO_SECRET = os.environ.get("SAPO_SECRET", "")
 LARK_HOST = "https://open.larksuite.com"
-# ────────────────────────────────────
+
+missing = [k for k,v in {"LARK_APP_ID":LARK_APP_ID,"LARK_APP_SECRET":LARK_APP_SECRET,"BASE_TOKEN":BASE_TOKEN,"SAPO_STORE":SAPO_STORE,"SAPO_KEY":SAPO_KEY,"SAPO_SECRET":SAPO_SECRET}.items() if not v]
+if missing:
+    print(f"LỖI: Thiếu secrets: {missing}")
+    sys.exit(1)
+print("Config OK")
+sys.stdout.flush()
 
 # ─── Lark ───────────────────────────
 class LarkClient:
@@ -33,15 +40,33 @@ class LarkClient:
         return {"Authorization": f"Bearer {self._token()}", "Content-Type": "application/json"}
     def create(self, fields):
         r = requests.post(f"{LARK_HOST}/open-apis/bitable/v1/apps/{BASE_TOKEN}/tables/{STAGING}/records",
-            headers=self._h(), json={"fields": fields}, timeout=30)
+            headers=self._h(), json={"fields": fields}, timeout=15)
         return r.json().get("code") == 0
 
+print("Connecting to Lark...")
 lark = LarkClient()
+try:
+    lark._token()
+    print("Lark token OK")
+except Exception as e:
+    print(f"LARK AUTH FAIL: {e}")
+    sys.exit(1)
+sys.stdout.flush()
 
 # ─── SAPO ───────────────────────────
 def sapo(path):
-    r = requests.get(f"https://{SAPO_STORE}/admin/{path}", auth=(SAPO_KEY, SAPO_SECRET), timeout=30)
-    return r.json() if r.status_code == 200 else {}
+    r = requests.get(f"https://{SAPO_STORE}/admin/{path}", auth=(SAPO_KEY, SAPO_SECRET), timeout=15)
+    if r.status_code != 200:
+        print(f"SAPO error: {r.status_code}")
+        return {"orders": []}
+    return r.json()
+
+print("Fetching SAPO orders...")
+sys.stdout.flush()
+data = sapo("orders.json?created_at_min=2026-06-24T00:00:00Z&limit=50")
+orders = data.get("orders", [])
+print(f"SAPO OK: {len(orders)} orders")
+sys.stdout.flush()
 
 # ─── Sync ───────────────────────────
 def sync_order(o):
@@ -59,9 +84,6 @@ def sync_order(o):
             dep += float(tx.get("amount", 0))
     if dep == 0 and o.get("financial_status") == "paid":
         dep = total
-    ts = o.get("created_at", "")
-    try: dt = int(time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))) * 1000
-    except: dt = 0
     n = 0
     for li in o.get("line_items", []):
         price = float(li.get("price", 0))
@@ -81,35 +103,10 @@ def sync_order(o):
             pass
     return n
 
-def run():
-    print("=== Backup sync ===")
-    since = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 7 * 86400))
-    data = sapo(f"orders.json?created_at_min={since}&limit=250")
-    orders = data.get("orders", [])
-    p = 1
-    while data.get("orders") and len(data.get("orders", [])) == 250:
-        p += 1
-        data = sapo(f"orders.json?created_at_min={since}&limit=250&page={p}")
-        orders += data.get("orders", [])
-    print(f"{len(orders)} orders found")
-    n = sum(sync_order(o) for o in orders)
-    print(f"Done: {n} records synced")
+n = 0
+for o in orders:
+    n += sync_order(o)
+    print(f"  #{o['order_number']}: synced")
+    sys.stdout.flush()
 
-    # Thông báo lỗi cho Telegram nếu có
-    if n == 0 and len(orders) > 0 and TELEGRAM_TOKEN:
-        msg = f"⚠️ <b>Cảnh báo</b>\nBackup sync (GitHub Actions) chạy lúc {time.strftime('%H:%M %d/%m/%Y')}\n"
-        msg += f"Có {len(orders)} đơn nhưng 0 record được sync.\nCần kiểm tra Render và Lark workflow."
-        try:
-            r = requests.get(f"{LARK_HOST}/open-apis/bitable/v1/apps/{BASE_TOKEN}/tables/{STAGING}/records?page_size=1",
-                headers=lark._h(), timeout=10)
-            if r.json().get("code") != 0:
-                msg += f"\nLỗi Lark: {r.json().get('msg','')}"
-            requests.post(f"{TELEGRAM_API}/sendMessage", json={
-                "chat_id": os.environ.get("TELEGRAM_ALERT_CHAT_ID", ""),
-                "text": msg, "parse_mode": "HTML"
-            }, timeout=10)
-        except:
-            pass
-
-if __name__ == "__main__":
-    run()
+print(f"=== Done: {n} records ===")
