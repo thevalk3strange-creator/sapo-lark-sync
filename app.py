@@ -20,7 +20,8 @@ SAPO_STORE = os.environ["SAPO_STORE"]
 SAPO_KEY = os.environ["SAPO_KEY"]
 SAPO_SECRET = os.environ["SAPO_SECRET"]
 LARK_HOST = "https://open.larksuite.com"
-INTERVAL_HOURS = int(os.environ.get("INTERVAL_HOURS", "6"))
+SYNC_HOURS = os.environ.get("SYNC_HOURS", "8-20/2")
+SYNC_TZ = "Asia/Ho_Chi_Minh"
 # ────────────────────────────────────
 
 # ─── Lark: chỉ ghi staging ─────────
@@ -177,10 +178,10 @@ def trigger_backfill():
 
 # ─── Scheduler ──────────────────────
 scheduler = BackgroundScheduler()
-scheduler.add_job(run, "interval", hours=INTERVAL_HOURS, id="sync")
+scheduler.add_job(run, "cron", hour=SYNC_HOURS, minute="0", timezone="Asia/Ho_Chi_Minh", id="sync")
 scheduler.start()
 
 if __name__ == "__main__":
-    log.info(f"Start (interval={INTERVAL_HOURS}h)")
+    log.info(f"Start (cron hour={SYNC_HOURS}, tz=Asia/Ho_Chi_Minh)")
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
