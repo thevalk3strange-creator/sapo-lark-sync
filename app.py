@@ -28,10 +28,10 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 CHAT_IDS_FILE = "/tmp/chat_ids.json"
 
-# ─── AI Box ─────────────────────────
-AI_BOX_KEY = os.environ.get("AI_BOX_API_KEY", "")
-AI_BOX_URL = "https://api.ai-box.vn/v1/chat/completions"
-AI_MODEL = "deepseek-v4-flash"
+# ─── OpenRouter (free model) ────────
+OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+AI_MODEL = "nousresearch/hermes-3-llama-3.1-8b:free"
 
 SYSTEM_PROMPT = """Bạn là trợ lý CSKH của Gấm Vóc (shop áo dài cưới).
 Bạn trả lời ngắn gọn, thân thiện bằng tiếng Việt.
@@ -41,11 +41,11 @@ Nếu không tìm thấy đơn hàng, hãy đề nghị khách cung cấp thêm 
 Không nói "không có quyền truy cập" — thay vào đó hãy nói "không tìm thấy" và đề nghị khách kiểm tra lại thông tin."""
 
 def ask_ai(user_msg):
-    """Gọi API AI Box để trả lời tin nhắn"""
-    if not AI_BOX_KEY:
+    """Gọi OpenRouter API để trả lời tin nhắn"""
+    if not OPENROUTER_KEY:
         return "❌ Chưa cấu hình AI. Liên hệ admin để setup."
     try:
-        r = requests.post(AI_BOX_URL, json={
+        r = requests.post(OPENROUTER_URL, json={
             "model": AI_MODEL,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -54,9 +54,11 @@ def ask_ai(user_msg):
             "max_tokens": 500,
             "temperature": 0.7
         }, headers={
-            "Authorization": f"Bearer {AI_BOX_KEY}",
-            "Content-Type": "application/json"
-        }, timeout=15)
+            "Authorization": f"Bearer {OPENROUTER_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://gam-voc.mysapo.net",
+            "X-Title": "Tro Ly Gam Voc CSKH"
+        }, timeout=30)
         data = r.json()
         return data["choices"][0]["message"]["content"].strip()
     except Exception as e:
@@ -164,6 +166,34 @@ def format_order_info(matches):
         lines.append(f"  Tổng: {float(total):,.0f}đ\n")
     return "\n".join(lines)
 
+def detect_month_query(text):
+    """Phát hiện câu hỏi về tháng. Trả về (month, year) hoặc None."""
+    import re
+    text = text.lower().strip()
+    
+    # Map tháng Việt Nam
+    month_map = {
+        "tháng 1": 1, "tháng 2": 2, "tháng 3": 3, "tháng 4": 4,
+        "tháng 5": 5, "tháng 6": 6, "tháng 7": 7, "tháng 8": 8,
+        "tháng 9": 9, "tháng 10": 10, "tháng 11": 11, "tháng 12": 12,
+        "thang 1": 1, "thang 2": 2, "thang 3": 3, "thang 4": 4,
+        "thang 5": 5, "thang 6": 6, "thang 7": 7, "thang 8": 8,
+        "thang 9": 9, "thang 10": 10, "thang 11": 11, "thang 12": 12,
+        "thg 1": 1, "thg 2": 2, "thg 3": 3, "thg 4": 4,
+        "thg 5": 5, "thg 6": 6, "thg 7": 7, "thg 8": 8,
+        "thg 9": 9, "thg 10": 10, "thg 11": 11, "thg 12": 12,
+    }
+    
+    # Kiểm tra pattern "tháng X"
+    for key, month in month_map.items():
+        if key in text:
+            # Tìm year nếu có
+            year_match = re.search(r'20\d{2}', text)
+            year = int(year_match.group()) if year_match else None
+            return (month, year)
+    
+    return None
+
 def report_daily():
     """Gửi báo cáo cuối ngày cho CSKH"""
     log.info("=== Daily report ===")
@@ -173,10 +203,10 @@ def report_daily():
         orders = data.get("orders", [])
         total_revenue = sum(float(o.get("total_price", 0)) for o in orders)
 
-        msg = f"📊 <b>Báo cáo cuối ngày</b>\n"
+        msg = f"📊 <b>Báo cáo hôm nay</b>\n"
         msg += f"📅 {time.strftime('%d/%m/%Y', time.localtime())}\n\n"
-        msg += f"🆕 Đơn mới hôm nay: <b>{len(orders)}</b>\n"
-        msg += f"💰 Tổng doanh thu: <b>{total_revenue:,.0f}đ</b>\n\n"
+        msg += f"🆕 Đơn mới: <b>{len(orders)}</b>\n"
+        msg += f"💰 Doanh thu: <b>{total_revenue:,.0f}đ</b>\n\n"
 
         if orders:
             msg += "━━━ Danh sách ━━━\n"
@@ -188,11 +218,72 @@ def report_daily():
             if len(orders) > 15:
                 msg += f"... và {len(orders)-15} đơn khác\n"
 
-        msg += f"\n━━━━━━━━━\n<i>Nguồn: Render Sync | {time.strftime('%H:%M %d/%m/%Y')}</i>"
+        msg += f"\n━━━━━━━━━\n<i>Nguồn: Railway | {time.strftime('%H:%M %d/%m/%Y')}</i>"
         send_telegram(msg)
         log.info(f"Report sent to {len(load_chat_ids())} chats")
     except Exception as e:
         log.error(f"Report fail: {e}")
+
+def report_monthly(month, year=None):
+    """Báo cáo thống kê theo tháng"""
+    if not year:
+        year = time.localtime().tm_year
+    try:
+        # Tính ngày đầu và cuối tháng
+        from calendar import monthrange
+        last_day = monthrange(year, month)[1]
+        date_min = f"{year}-{month:02d}-01T00:00:00Z"
+        date_max = f"{year}-{month:02d}-{last_day:02d}T23:59:59Z"
+        
+        # Fetch orders trong tháng
+        all_orders = []
+        page = 1
+        while True:
+            data = sapo(f"orders.json?created_at_min={date_min}&created_at_max={date_max}&limit=250&page={page}")
+            orders = data.get("orders", [])
+            all_orders.extend(orders)
+            if len(orders) < 250:
+                break
+            page += 1
+        
+        total_revenue = sum(float(o.get("total_price", 0)) for o in all_orders)
+        paid_orders = [o for o in all_orders if o.get("financial_status") == "paid"]
+        paid_revenue = sum(float(o.get("total_price", 0)) for o in paid_orders)
+        
+        # Top customers
+        customer_stats = {}
+        for o in all_orders:
+            ship = o.get("shipping_address") or {}
+            c = o.get("customer") or {}
+            name = ship.get("name", "") or f"{c.get('last_name','')} {c.get('first_name','')}".strip()
+            if name:
+                if name not in customer_stats:
+                    customer_stats[name] = {"count": 0, "total": 0}
+                customer_stats[name]["count"] += 1
+                customer_stats[name]["total"] += float(o.get("total_price", 0))
+        
+        top_customers = sorted(customer_stats.items(), key=lambda x: x[1]["total"], reverse=True)[:5]
+        
+        month_names = ["", "Tháng 1", "Tháng 2", "Tháng 3", "Tháng 4", "Tháng 5", "Tháng 6",
+                       "Tháng 7", "Tháng 8", "Tháng 9", "Tháng 10", "Tháng 11", "Tháng 12"]
+        
+        msg = f"📊 <b>{month_names[month]} {year}</b>\n\n"
+        msg += f"📦 Tổng đơn: <b>{len(all_orders)}</b>\n"
+        msg += f"✅ Đã thanh toán: <b>{len(paid_orders)}</b>\n"
+        msg += f"💰 Tổng doanh thu: <b>{total_revenue:,.0f}đ</b>\n"
+        msg += f"💵 Đã thu: <b>{paid_revenue:,.0f}đ</b>\n\n"
+        
+        if top_customers:
+            msg += "🏆 <b>Top khách hàng:</b>\n"
+            for name, stats in top_customers:
+                msg += f"• {name}: {stats['count']} đơn, {stats['total']:,.0f}đ\n"
+        
+        msg += f"\n━━━━━━━━━\n<i>Nguồn: Railway | {time.strftime('%H:%M %d/%m/%Y')}</i>"
+        send_telegram(msg)
+        log.info(f"Monthly report {month}/{year}: {len(all_orders)} orders")
+    except Exception as e:
+        log.error(f"Monthly report fail: {e}")
+        send_telegram(f"❌ Không thể tạo báo cáo tháng {month}/{year}. Thử lại sau.")
 # ────────────────────────────────────
 # ────────────────────────────────────
 
